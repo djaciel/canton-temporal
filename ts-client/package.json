@@ -1,0 +1,27 @@
+{
+  "name": "canton-temporal-ts-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for the Canton Asset Swap Daml contracts via the JSON Ledger API",
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "setup:env": "ts-node src/scripts/setup-env.ts",
+    "demo:swap": "ts-node src/scripts/demo-swap.ts",
+    "demo:batch": "ts-node src/scripts/demo-batch.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "jsonwebtoken": "^9.0.3"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
