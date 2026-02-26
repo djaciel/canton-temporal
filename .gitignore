@@ -1,0 +1,27 @@
+# Daml build artifacts
+daml-contracts/**/.daml/
+daml-contracts/**/*.dar
+
+# Node / TypeScript
+node_modules/
+dist/
+build/
+*.js.map
+*.d.ts
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.iml

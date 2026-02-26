@@ -1,0 +1,518 @@
+-- Copyright (c) 2026 57Blocks. All Rights Reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Comprehensive test suite for the Asset Swap system.
+-- Run with: daml test
+-- Each `test_*` script is an independent scenario.
+module Tests where
+
+import Daml.Script
+import Asset
+import SwapProposal
+import TransferBatch
+
+-- ---------------------------------------------------------------------------
+-- Helpers
+-- ---------------------------------------------------------------------------
+
+-- | Allocate the three standard parties used in most tests.
+allocateParties : Script (Party, Party, Party)
+allocateParties = do
+  alice    <- allocateParty "Alice"
+  bob      <- allocateParty "Bob"
+  operator <- allocateParty "Operator"
+  return (alice, bob, operator)
+
+-- | Issue a single asset on behalf of a party.
+issueAsset : Party -> Text -> Decimal -> [Party] -> Script (ContractId Asset)
+issueAsset owner symbol qty obs =
+  submit owner do
+    createCmd Asset with
+      issuer    = owner
+      owner     = owner
+      symbol    = symbol
+      quantity  = qty
+      observers = obs
+
+
+-- ---------------------------------------------------------------------------
+-- 1. Happy Path: full swap lifecycle
+-- ---------------------------------------------------------------------------
+test_happyPathSwap : Script ()
+test_happyPathSwap = do
+  (alice, bob, operator) <- allocateParties
+
+  -- Alice issues 200 TokenX; Bob issues 100 TokenY
+  tokenXCid <- issueAsset alice "TokenX" 200.0 [bob, operator]
+  tokenYCid <- issueAsset bob   "TokenY" 100.0 [alice, operator]
+
+  -- Alice proposes: offer 200 TokenX, request 100 TokenY
+  proposalCid <- submit alice do
+    createCmd SwapProposal with
+      proposer          = alice
+      counterparty      = bob
+      settler           = operator
+      offeredAssetCid   = tokenXCid
+      offeredSymbol     = "TokenX"
+      offeredQuantity   = 200.0
+      requestedSymbol   = "TokenY"
+      requestedQuantity = 100.0
+
+  -- Bob accepts by pledging his TokenY
+  settlementCid <- submit bob do
+    exerciseCmd proposalCid Accept with
+      counterpartyAssetCid = tokenYCid
+
+  -- Operator atomically settles both legs
+  (newTokenXCid, newTokenYCid) <- submit operator do
+    exerciseCmd settlementCid Settle
+
+  -- Verify ownership after settlement
+  newTokenX <- queryContractId alice newTokenXCid
+  newTokenY <- queryContractId bob   newTokenYCid
+
+  -- newTokenX should now belong to bob, newTokenY to alice
+  -- (Transfer returns asset with newOwner)
+  Some assetX <- queryContractId bob   newTokenXCid
+  Some assetY <- queryContractId alice newTokenYCid
+
+  assertMsg "TokenX should belong to Bob"   (assetX.owner == bob)
+  assertMsg "TokenY should belong to Alice" (assetY.owner == alice)
+  assertMsg "TokenX quantity preserved"     (assetX.quantity == 200.0)
+  assertMsg "TokenY quantity preserved"     (assetY.quantity == 100.0)
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 2. Counterparty rejects the proposal
+-- ---------------------------------------------------------------------------
+test_rejectProposal : Script ()
+test_rejectProposal = do
+  (alice, bob, operator) <- allocateParties
+
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [bob, operator]
+
+  proposalCid <- submit alice do
+    createCmd SwapProposal with
+      proposer          = alice
+      counterparty      = bob
+      settler           = operator
+      offeredAssetCid   = tokenXCid
+      offeredSymbol     = "TokenX"
+      offeredQuantity   = 100.0
+      requestedSymbol   = "TokenY"
+      requestedQuantity = 50.0
+
+  -- Bob rejects: contract is archived, no settlement created
+  submit bob do
+    exerciseCmd proposalCid Reject
+
+  -- The proposal should no longer be active
+  result <- queryContractId alice proposalCid
+  assertMsg "Proposal should be archived after rejection" (result == None)
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 3. Proposer cancels before acceptance
+-- ---------------------------------------------------------------------------
+test_cancelProposal : Script ()
+test_cancelProposal = do
+  (alice, bob, operator) <- allocateParties
+
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [bob, operator]
+
+  proposalCid <- submit alice do
+    createCmd SwapProposal with
+      proposer          = alice
+      counterparty      = bob
+      settler           = operator
+      offeredAssetCid   = tokenXCid
+      offeredSymbol     = "TokenX"
+      offeredQuantity   = 100.0
+      requestedSymbol   = "TokenY"
+      requestedQuantity = 50.0
+
+  -- Alice changes her mind before Bob responds
+  submit alice do
+    exerciseCmd proposalCid Cancel
+
+  result <- queryContractId alice proposalCid
+  assertMsg "Proposal should be archived after cancellation" (result == None)
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 4. Settler aborts a pending settlement
+-- ---------------------------------------------------------------------------
+test_abortSettlement : Script ()
+test_abortSettlement = do
+  (alice, bob, operator) <- allocateParties
+
+  tokenXCid <- issueAsset alice "TokenX" 200.0 [bob, operator]
+  tokenYCid <- issueAsset bob   "TokenY" 100.0 [alice, operator]
+
+  proposalCid <- submit alice do
+    createCmd SwapProposal with
+      proposer          = alice
+      counterparty      = bob
+      settler           = operator
+      offeredAssetCid   = tokenXCid
+      offeredSymbol     = "TokenX"
+      offeredQuantity   = 200.0
+      requestedSymbol   = "TokenY"
+      requestedQuantity = 100.0
+
+  settlementCid <- submit bob do
+    exerciseCmd proposalCid Accept with
+      counterpartyAssetCid = tokenYCid
+
+  -- Operator decides to abort (e.g. compliance check failed)
+  submit operator do
+    exerciseCmd settlementCid Abort
+
+  result <- queryContractId operator settlementCid
+  assertMsg "Settlement should be archived after abort" (result == None)
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 5. UTXO Split: Alice splits an asset and swaps only part of it
+-- ---------------------------------------------------------------------------
+test_splitAndSwap : Script ()
+test_splitAndSwap = do
+  (alice, bob, operator) <- allocateParties
+
+  -- Alice has 500 TokenX but only wants to swap 200
+  bigTokenXCid <- issueAsset alice "TokenX" 500.0 [bob, operator]
+  tokenYCid    <- issueAsset bob   "TokenY" 100.0 [alice, operator]
+
+  -- Alice splits: 200 to offer, 300 to keep
+  (offerCid, keepCid) <- submit alice do
+    exerciseCmd bigTokenXCid Split with splitQuantity = 200.0
+
+  kept <- queryContractId alice keepCid
+  Some keptAsset <- queryContractId alice keepCid
+  assertMsg "Kept portion should be 300" (keptAsset.quantity == 300.0)
+
+  -- Proceed with the swap using only the 200 portion
+  proposalCid <- submit alice do
+    createCmd SwapProposal with
+      proposer          = alice
+      counterparty      = bob
+      settler           = operator
+      offeredAssetCid   = offerCid
+      offeredSymbol     = "TokenX"
+      offeredQuantity   = 200.0
+      requestedSymbol   = "TokenY"
+      requestedQuantity = 100.0
+
+  settlementCid <- submit bob do
+    exerciseCmd proposalCid Accept with
+      counterpartyAssetCid = tokenYCid
+
+  (newTokenXCid, newTokenYCid) <- submit operator do
+    exerciseCmd settlementCid Settle
+
+  Some aliceTokenY <- queryContractId alice newTokenYCid
+  assertMsg "Alice should receive 100 TokenY" (aliceTokenY.quantity == 100.0)
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 6. Merge: Alice merges two TokenX holdings into one
+-- ---------------------------------------------------------------------------
+test_mergeAssets : Script ()
+test_mergeAssets = do
+  (alice, bob, operator) <- allocateParties
+
+  first  <- issueAsset alice "TokenX" 300.0 []
+  second <- issueAsset alice "TokenX" 200.0 []
+
+  mergedCid <- submit alice do
+    exerciseCmd first Merge with otherCid = second
+
+  Some merged <- queryContractId alice mergedCid
+  assertMsg "Merged quantity should be 500" (merged.quantity == 500.0)
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 7. Authorization: Only the counterparty can accept
+-- ---------------------------------------------------------------------------
+test_unauthorizedAccept : Script ()
+test_unauthorizedAccept = do
+  (alice, bob, operator) <- allocateParties
+  eve <- allocateParty "Eve"
+
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [bob, operator, eve]
+  tokenYCid <- issueAsset eve   "TokenY" 50.0  [alice, operator]
+
+  proposalCid <- submit alice do
+    createCmd SwapProposal with
+      proposer          = alice
+      counterparty      = bob
+      settler           = operator
+      offeredAssetCid   = tokenXCid
+      offeredSymbol     = "TokenX"
+      offeredQuantity   = 100.0
+      requestedSymbol   = "TokenY"
+      requestedQuantity = 50.0
+
+  -- Eve (not the counterparty) tries to accept — must fail
+  r <- submitMustFail eve do
+    exerciseCmd proposalCid Accept with
+      counterpartyAssetCid = tokenYCid
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 8. Authorization: Only the settler can execute Settle
+-- ---------------------------------------------------------------------------
+test_unauthorizedSettle : Script ()
+test_unauthorizedSettle = do
+  (alice, bob, operator) <- allocateParties
+  eve <- allocateParty "Eve"
+
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [bob, operator]
+  tokenYCid <- issueAsset bob   "TokenY" 50.0  [alice, operator]
+
+  proposalCid <- submit alice do
+    createCmd SwapProposal with
+      proposer          = alice
+      counterparty      = bob
+      settler           = operator
+      offeredAssetCid   = tokenXCid
+      offeredSymbol     = "TokenX"
+      offeredQuantity   = 100.0
+      requestedSymbol   = "TokenY"
+      requestedQuantity = 50.0
+
+  settlementCid <- submit bob do
+    exerciseCmd proposalCid Accept with
+      counterpartyAssetCid = tokenYCid
+
+  -- Alice (not the settler) tries to settle — must fail
+  submitMustFail alice do
+    exerciseCmd settlementCid Settle
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 9. Authorization: Only the proposer can cancel
+-- ---------------------------------------------------------------------------
+test_unauthorizedCancel : Script ()
+test_unauthorizedCancel = do
+  (alice, bob, operator) <- allocateParties
+
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [bob, operator]
+
+  proposalCid <- submit alice do
+    createCmd SwapProposal with
+      proposer          = alice
+      counterparty      = bob
+      settler           = operator
+      offeredAssetCid   = tokenXCid
+      offeredSymbol     = "TokenX"
+      offeredQuantity   = 100.0
+      requestedSymbol   = "TokenY"
+      requestedQuantity = 50.0
+
+  -- Bob tries to cancel the proposer's offer — must fail
+  submitMustFail bob do
+    exerciseCmd proposalCid Cancel
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 10. Invalid asset: ensure quantity > 0
+-- ---------------------------------------------------------------------------
+test_zeroQuantityAsset : Script ()
+test_zeroQuantityAsset = do
+  (alice, _, _) <- allocateParties
+
+  -- Creating an asset with 0 quantity should fail due to ensure clause
+  submitMustFail alice do
+    createCmd Asset with
+      issuer    = alice
+      owner     = alice
+      symbol    = "TokenX"
+      quantity  = 0.0
+      observers = []
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 11. Invalid Split: cannot split more than available
+-- ---------------------------------------------------------------------------
+test_invalidSplit : Script ()
+test_invalidSplit = do
+  (alice, bob, operator) <- allocateParties
+
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [bob, operator]
+
+  -- Trying to split 200 out of 100 — must fail
+  submitMustFail alice do
+    exerciseCmd tokenXCid Split with splitQuantity = 200.0
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 12. Disclose: owner can add observers non-consumingly
+-- ---------------------------------------------------------------------------
+test_disclose : Script ()
+test_disclose = do
+  (alice, bob, operator) <- allocateParties
+  charlie <- allocateParty "Charlie"
+
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [bob]
+
+  -- Alice discloses her asset to Charlie
+  newCid <- submit alice do
+    exerciseCmd tokenXCid Disclose with newObserver = charlie
+
+  Some asset <- queryContractId charlie newCid
+  assertMsg "Charlie should now be an observer" (charlie `elem` asset.observers)
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 13. Batching: N transfers executed in a single Daml transaction
+--
+-- Scenario: Alice wants to send TokenX to Bob, and Bob wants to send TokenY
+-- to Charlie. Instead of executing each transfer separately (2 ledger
+-- roundtrips), the operator batches both into a single transaction (1 roundtrip).
+--
+-- This demonstrates the batching pattern from the Canton course:
+--   1. Each owner creates a TransferRequest (pre-authorizes the operator).
+--   2. The operator groups them into a TransferBatch.
+--   3. ExecuteTransfers settles all transfers atomically in 1 tx.
+-- ---------------------------------------------------------------------------
+test_batchTransfers : Script ()
+test_batchTransfers = do
+  (alice, bob, operator) <- allocateParties
+  charlie <- allocateParty "Charlie"
+
+  -- Issue assets (each owner issues their own token)
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [operator]
+  tokenYCid <- issueAsset bob   "TokenY" 200.0 [operator, charlie]
+
+  -- Step 1: Owners pre-authorize the operator to transfer their assets.
+  --         They create TransferRequest contracts and sign them.
+  --         The operator is just an observer at this point — it hasn't done anything yet.
+  reqAliceCid <- submit alice do
+    createCmd TransferRequest with
+      operator = operator
+      owner    = alice
+      newOwner = bob      -- Alice's TokenX will go to Bob
+      assetCid = tokenXCid
+
+  reqBobCid <- submit bob do
+    createCmd TransferRequest with
+      operator = operator
+      owner    = bob
+      newOwner = charlie  -- Bob's TokenY will go to Charlie
+      assetCid = tokenYCid
+
+  -- Step 2: Operator creates a batch grouping both transfer requests.
+  batchCid <- submit operator do
+    createCmd TransferBatch with
+      operator = operator
+      requests = [reqAliceCid, reqBobCid]
+
+  -- Step 3: Operator executes all transfers in 1 single Daml transaction.
+  --         Both transfers succeed together, or neither does.
+  newAssets <- submit operator do
+    exerciseCmd batchCid ExecuteTransfers
+
+  -- Destructure the result list: 2 transfers → 2 new asset CIDs
+  let [xCid, yCid] = newAssets
+
+  -- Verify: TokenX now belongs to Bob
+  Some assetX <- queryContractId bob xCid
+  assertMsg "TokenX should belong to Bob"     (assetX.owner == bob)
+  assertMsg "TokenX quantity preserved"       (assetX.quantity == 100.0)
+
+  -- Verify: TokenY now belongs to Charlie
+  Some assetY <- queryContractId charlie yCid
+  assertMsg "TokenY should belong to Charlie" (assetY.owner == charlie)
+  assertMsg "TokenY quantity preserved"       (assetY.quantity == 200.0)
+
+  return ()
+
+
+-- ---------------------------------------------------------------------------
+-- 14. Batch partial failure: one bad transfer rolls back the entire batch
+--
+-- Scenario: the operator tries to batch two transfers, but one of the
+-- underlying assets was already consumed before the batch executes.
+-- The entire batch rolls back — neither transfer goes through.
+--
+-- This is the key atomicity guarantee: no partial execution.
+-- The Temporal bot handles this by falling back to individual retries.
+-- ---------------------------------------------------------------------------
+test_batchPartialFailure : Script ()
+test_batchPartialFailure = do
+  (alice, bob, operator) <- allocateParties
+  charlie <- allocateParty "Charlie"
+
+  -- Issue assets
+  tokenXCid <- issueAsset alice "TokenX" 100.0 [operator]
+  tokenYCid <- issueAsset bob   "TokenY" 200.0 [operator]
+
+  -- Both owners create TransferRequests (pre-authorize the operator)
+  reqAliceCid <- submit alice do
+    createCmd TransferRequest with
+      operator = operator
+      owner    = alice
+      newOwner = bob
+      assetCid = tokenXCid
+
+  reqBobCid <- submit bob do
+    createCmd TransferRequest with
+      operator = operator
+      owner    = bob
+      newOwner = charlie
+      assetCid = tokenYCid
+
+  -- Simulate race condition: Bob transfers his asset directly BEFORE
+  -- the batch executes (e.g., he changed his mind and moved the asset elsewhere).
+  -- tokenYCid is now archived — reqBobCid's assetCid is stale.
+  submit bob do
+    exerciseCmd tokenYCid Transfer with newOwner = charlie
+
+  -- Operator creates the batch (unaware that tokenYCid was already consumed)
+  batchCid <- submit operator do
+    createCmd TransferBatch with
+      operator = operator
+      requests = [reqAliceCid, reqBobCid]
+
+  -- Executing the batch MUST fail: reqBob's assetCid is archived.
+  -- Because Daml transactions are atomic, the entire batch rolls back.
+  -- Alice's TokenX is NOT transferred — it's as if nothing happened.
+  submitMustFail operator do
+    exerciseCmd batchCid ExecuteTransfers
+
+  -- Verify: Alice's original asset is still alive and untouched
+  Some aliceAsset <- queryContractId alice tokenXCid
+  assertMsg "Alice's TokenX should still belong to Alice" (aliceAsset.owner == alice)
+  assertMsg "Alice's TokenX quantity should be unchanged"  (aliceAsset.quantity == 100.0)
+
+  -- The batch contract itself was not consumed (ExecuteTransfers failed)
+  -- so it can still be cancelled or re-attempted
+  Some _ <- queryContractId operator batchCid
+  assertMsg "Batch contract should still be active" True
+
+  return ()

@@ -1,0 +1,76 @@
+-- Copyright (c) 2026 57Blocks. All Rights Reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Asset template representing a tokenized holding owned by a party.
+-- Supports transfer and UTXO-style splitting.
+module Asset where
+
+-- | A tokenized asset held by an owner and issued by an issuer.
+--
+-- Design decision (Daml Finance pattern):
+--   Only the `issuer` is a signatory; the `owner` is an observer and controller.
+--   This allows atomic transfers inside swap settlements: when the settler
+--   exercises Settle on a SwapSettlement (signed by both proposer and counterparty),
+--   the Transfer choice runs with the issuer's authority already in scope,
+--   so the new Asset (signatory issuer) can be created without requiring the
+--   new owner to additionally sign.
+--
+-- Trade-off: the owner doesn't have signatory obligations, but retains full
+-- control via choices (Transfer, Split, Merge).
+template Asset
+  with
+    issuer   : Party    -- ^ Party that issued / minted this asset (sole signatory)
+    owner    : Party    -- ^ Current holder — can exercise choices
+    symbol   : Text     -- ^ Ticker / name of the token (e.g. "TokenX")
+    quantity : Decimal  -- ^ Amount held
+    observers : [Party] -- ^ Extra parties that can see this contract
+  where
+    signatory issuer
+    observer owner :: observers
+
+    ensure quantity > 0.0
+
+    -- | Transfer ownership to a new party.
+    -- Produces a new Asset contract for newOwner; the old contract is consumed.
+    choice Transfer : ContractId Asset
+      with
+        newOwner : Party
+      controller owner
+      do
+        create this with owner = newOwner
+
+    -- | Add an observer to the asset (so other parties can see it).
+    -- Consuming: replaces this contract with one that includes the new observer.
+    choice Disclose : ContractId Asset
+      with
+        newObserver : Party
+      controller owner
+      do
+        create this with observers = newObserver :: observers
+
+    -- | UTXO-style split: consume this asset and produce two new ones.
+    -- Useful for partial swaps or batch settlements.
+    choice Split : (ContractId Asset, ContractId Asset)
+      with
+        splitQuantity : Decimal -- ^ Amount to carve out into the first output
+      controller owner
+      do
+        assertMsg "splitQuantity must be positive" (splitQuantity > 0.0)
+        assertMsg "splitQuantity must be less than total" (splitQuantity < quantity)
+        first  <- create this with quantity = splitQuantity
+        second <- create this with quantity = quantity - splitQuantity
+        return (first, second)
+
+    -- | Merge another asset of the same symbol into this one.
+    -- The other asset is consumed and its quantity is added here.
+    choice Merge : ContractId Asset
+      with
+        otherCid : ContractId Asset
+      controller owner
+      do
+        other <- fetch otherCid
+        assertMsg "Merge: issuers must match" (other.issuer == issuer)
+        assertMsg "Merge: symbols must match" (other.symbol == symbol)
+        assertMsg "Merge: owners must match" (other.owner == owner)
+        archive otherCid
+        create this with quantity = quantity + other.quantity

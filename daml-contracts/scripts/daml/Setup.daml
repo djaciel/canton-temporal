@@ -1,0 +1,56 @@
+-- Copyright (c) 2026 57Blocks. All Rights Reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Ledger initialization script.
+-- Allocates parties and issues initial assets so the sandbox starts with meaningful state.
+-- Run via: daml start  (referenced in daml.yaml as init-script)
+module Setup where
+
+import Daml.Script
+import Asset
+
+setup : Script ()
+setup = do
+  -- Allocate named parties
+  alice    <- allocatePartyByHint (PartyIdHint "Alice")
+  bob      <- allocatePartyByHint (PartyIdHint "Bob")
+  operator <- allocatePartyByHint (PartyIdHint "Operator")
+
+  -- Create user accounts (needed for JSON API authentication)
+  aliceId    <- validateUserId "alice"
+  bobId      <- validateUserId "bob"
+  operatorId <- validateUserId "operator"
+
+  createUser (User aliceId    (Some alice))    [CanActAs alice]
+  createUser (User bobId      (Some bob))      [CanActAs bob]
+  createUser (User operatorId (Some operator)) [CanActAs operator]
+
+  -- Issue initial assets
+  -- Alice holds 1000 TokenX
+  _tokenX1 <- submit alice do
+    createCmd Asset with
+      issuer    = alice
+      owner     = alice
+      symbol    = "TokenX"
+      quantity  = 1000.0
+      observers = [bob, operator]
+
+  -- Alice holds an additional 500 TokenX (to demo Split / Merge later)
+  _tokenX2 <- submit alice do
+    createCmd Asset with
+      issuer    = alice
+      owner     = alice
+      symbol    = "TokenX"
+      quantity  = 500.0
+      observers = [bob, operator]
+
+  -- Bob holds 800 TokenY
+  _tokenY <- submit bob do
+    createCmd Asset with
+      issuer    = bob
+      owner     = bob
+      symbol    = "TokenY"
+      quantity  = 800.0
+      observers = [alice, operator]
+
+  return ()

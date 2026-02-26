@@ -1,0 +1,105 @@
+-- Copyright (c) 2026 57Blocks. All Rights Reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Propose-Accept pattern for initiating an asset swap between two parties.
+-- The proposer offers one asset in exchange for a specific asset from the counterparty.
+-- A neutral settler oversees the final execution.
+module SwapProposal where
+
+import Asset
+
+-- | A swap offer from `proposer` to `counterparty`.
+-- Only the proposer signs at creation time; the counterparty is an observer
+-- (can see the proposal but does not yet consent to it).
+template SwapProposal
+  with
+    proposer          : Party           -- ^ Party initiating the swap
+    counterparty      : Party           -- ^ Party receiving the offer
+    settler           : Party           -- ^ Neutral party that will settle accepted swaps
+    offeredAssetCid   : ContractId Asset -- ^ Asset the proposer is offering
+    offeredSymbol     : Text            -- ^ Symbol of the offered asset (for readability)
+    offeredQuantity   : Decimal         -- ^ Quantity being offered
+    requestedSymbol   : Text            -- ^ Symbol the proposer wants in return
+    requestedQuantity : Decimal         -- ^ Quantity the proposer wants in return
+  where
+    signatory proposer
+    observer counterparty, settler
+
+    ensure offeredQuantity > 0.0 && requestedQuantity > 0.0
+
+    -- | Counterparty accepts the proposal by pledging their asset.
+    -- Produces a SwapSettlement contract that still needs the settler to execute.
+    choice Accept : ContractId SwapSettlement
+      with
+        counterpartyAssetCid : ContractId Asset -- ^ Asset the counterparty is pledging
+      controller counterparty
+      do
+        -- Validate the pledged asset matches what was requested
+        pledged <- fetch counterpartyAssetCid
+        assertMsg "Accept: pledged symbol must match requested" 
+          (pledged.symbol == requestedSymbol)
+        assertMsg "Accept: pledged quantity must match requested" 
+          (pledged.quantity >= requestedQuantity)
+        assertMsg "Accept: pledged asset must be owned by counterparty" 
+          (pledged.owner == counterparty)
+
+        create SwapSettlement with
+          proposer
+          counterparty
+          settler
+          offeredAssetCid
+          counterpartyAssetCid
+          offeredSymbol
+          offeredQuantity
+          requestedSymbol
+          requestedQuantity
+
+    -- | Counterparty rejects the proposal. Both parties are notified (contract archived).
+    choice Reject : ()
+      controller counterparty
+      do return ()
+
+    -- | Proposer withdraws the proposal before it is accepted.
+    choice Cancel : ()
+      controller proposer
+      do return ()
+
+
+-- | A swap that has been agreed upon by both parties and is awaiting settlement.
+-- Both proposer and counterparty are signatories — they have committed their assets.
+-- The settler executes the atomic transfer.
+template SwapSettlement
+  with
+    proposer             : Party
+    counterparty         : Party
+    settler              : Party
+    offeredAssetCid      : ContractId Asset -- ^ Asset from proposer (to be received by counterparty)
+    counterpartyAssetCid : ContractId Asset -- ^ Asset from counterparty (to be received by proposer)
+    offeredSymbol        : Text
+    offeredQuantity      : Decimal
+    requestedSymbol      : Text
+    requestedQuantity    : Decimal
+  where
+    signatory proposer, counterparty
+    observer settler
+
+    -- | Settler atomically transfers both assets in a single Daml transaction.
+    -- This is the key UTXO-style atomic swap: either both legs settle or neither does.
+    choice Settle : (ContractId Asset, ContractId Asset)
+      controller settler
+      do
+        -- Transfer proposer's asset → counterparty
+        newAssetForCounterparty <- exercise offeredAssetCid Transfer
+          with newOwner = counterparty
+
+        -- Transfer counterparty's asset → proposer
+        newAssetForProposer <- exercise counterpartyAssetCid Transfer
+          with newOwner = proposer
+
+        return (newAssetForCounterparty, newAssetForProposer)
+
+    -- | Settler aborts the settlement (e.g. compliance failure, insufficient funds).
+    -- The original asset contracts remain with their owners unchanged.
+    choice Abort : ()
+      controller settler
+      do return ()

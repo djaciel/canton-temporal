@@ -1,0 +1,84 @@
+-- Copyright (c) 2026 57Blocks. All Rights Reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Batching pattern for the Transfer choice on Asset.
+--
+-- Separation of concerns:
+--   SwapSettlement  = business agreement  (both parties consented to the swap)
+--   TransferRequest = execution authority (owner pre-authorizes the operator)
+--   TransferBatch   = performance layer   (N transfers in 1 ledger roundtrip)
+--
+-- Without batching: each Transfer = 1 ledger roundtrip (~1 second each)
+-- With batching:    N Transfers   = 1 ledger roundtrip (all or nothing)
+module TransferBatch where
+
+import Asset
+
+
+-- | A pre-authorized transfer instruction created by the asset owner.
+--
+-- The owner (current holder) signs this contract, delegating execution
+-- to the operator. The operator can then group multiple TransferRequests
+-- into a single TransferBatch and execute them all in one Daml transaction.
+--
+-- Authorization chain when the batch executes:
+--   TransferBatch.ExecuteTransfers (controller=operator)
+--     └─ TransferRequest.ExecuteTransfer (controller=operator)
+--          └─ Asset.Transfer (controller=owner)
+--               ^
+--               └─ owner's authority flows from being signatory of TransferRequest
+template TransferRequest
+  with
+    operator : Party            -- ^ Party authorized to execute this transfer
+    owner    : Party            -- ^ Current asset holder (signs this contract)
+    newOwner : Party            -- ^ Intended recipient of the asset
+    assetCid : ContractId Asset -- ^ The asset to be transferred
+  where
+    signatory owner
+    observer operator, newOwner
+
+    -- | Operator executes the pre-authorized transfer.
+    -- The owner's authority (as signatory of this contract) satisfies
+    -- Asset.Transfer's `controller owner` requirement.
+    choice ExecuteTransfer : ContractId Asset
+      controller operator
+      do
+        exercise assetCid Transfer with newOwner
+
+    -- | Owner withdraws the pre-authorization before it is executed.
+    choice CancelTransfer : ()
+      controller owner
+      do return ()
+
+
+-- | Groups N TransferRequests and executes them all in a single Daml transaction.
+--
+-- The operator creates this contract pointing to a list of pending TransferRequests,
+-- then exercises ExecuteTransfers to process all of them atomically.
+--
+-- Key guarantee: if ANY transfer in the batch fails (e.g. an asset was already
+-- consumed), the entire transaction rolls back — no partial execution.
+--
+-- The Temporal bot uses this contract to maximize throughput:
+-- instead of N ledger roundtrips, it pays the cost of just 1.
+template TransferBatch
+  with
+    operator : Party
+    requests : [ContractId TransferRequest] -- ^ Ordered list of transfers to execute
+  where
+    signatory operator
+
+    ensure length requests > 0
+
+    -- | Execute all transfers atomically in a single Daml transaction.
+    -- Returns the list of new Asset contract IDs (one per executed request).
+    choice ExecuteTransfers : [ContractId Asset]
+      controller operator
+      do
+        mapA (\reqCid -> exercise reqCid ExecuteTransfer) requests
+
+    -- | Cancel the batch without executing any transfer.
+    -- The individual TransferRequests remain active and can be re-batched later.
+    choice CancelBatch : ()
+      controller operator
+      do return ()
