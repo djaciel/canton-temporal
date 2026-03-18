@@ -1,0 +1,25 @@
+// Bootstrap script: initialize synchronizer and connect participants
+
+// Start all local nodes
+nodes.local.start()
+
+// Bootstrap the synchronizer with sequencer and mediator
+bootstrap.synchronizer(
+  synchronizerName = "mysynchronizer",
+  sequencers = Seq(sequencer1),
+  mediators = Seq(mediator1),
+  synchronizerOwners = Seq(sequencer1, mediator1),
+  synchronizerThreshold = 2,
+  staticSynchronizerParameters = StaticSynchronizerParameters.defaultsWithoutKMS(ProtocolVersion.latest)
+)
+
+// Connect participants to the synchronizer via sequencer
+participant1.synchronizers.connect_local(sequencer1, alias = "mysynchronizer")
+participant2.synchronizers.connect_local(sequencer1, alias = "mysynchronizer")
+
+// Wait for connections to be active
+utils.retry_until_true { participant1.synchronizers.active("mysynchronizer") }
+utils.retry_until_true { participant2.synchronizers.active("mysynchronizer") }
+
+// Verify connectivity with a ping
+participant1.health.ping(participant2)

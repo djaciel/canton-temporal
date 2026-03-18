@@ -25,3 +25,5 @@ Thumbs.db
 # IDE
 .idea/
 *.iml
+
+.framework/

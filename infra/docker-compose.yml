@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: canton
+      POSTGRES_PASSWORD: canton
+    volumes:
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canton"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  canton:
+    build:
+      context: ./canton
+      dockerfile: Dockerfile
+    command: >
+      -c /canton-config/topology.conf
+      --bootstrap /canton-config/bootstrap/init.canton
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./canton/topology.conf:/canton-config/topology.conf:ro
+      - ./canton/bootstrap:/canton-config/bootstrap:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Participant 1
+      - "5011:5011"   # gRPC Ledger API
+      - "5012:5012"   # Admin API
+      - "5013:5013"   # HTTP Ledger API (JSON)
+      # Participant 2
+      - "5021:5021"   # gRPC Ledger API
+      - "5022:5022"   # Admin API
+      - "5023:5023"   # HTTP Ledger API (JSON)
+      # Sequencer
+      - "5001:5001"   # Public API
+      - "5002:5002"   # Admin API
+    environment:
+      JAVA_OPTS: "-Xmx4g -XX:+UseG1GC"

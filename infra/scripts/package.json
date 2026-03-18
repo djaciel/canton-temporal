@@ -1,0 +1,13 @@
+{
+  "name": "canton-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "bootstrap": "tsx bootstrap.ts",
+    "smoke-test": "tsx smoke-test.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
