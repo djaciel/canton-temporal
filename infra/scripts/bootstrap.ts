@@ -1,5 +1,6 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { setupKeycloak } from "./keycloak-setup";
 
 const PARTICIPANT1_URL = "http://localhost:5013";
 const PARTICIPANT2_URL = "http://localhost:5023";
@@ -94,18 +95,15 @@ async function createUser(
   }
 }
 
-async function getUsers(participantUrl: string): Promise<string[]> {
-  const res = await fetch(`${participantUrl}/v2/users`);
-  const data = (await res.json()) as { users: { id: string }[] };
-  return data.users.map((u) => u.id);
-}
-
 // --- Main bootstrap ---
 
 async function main() {
-  console.log("=== Canton Bootstrap Script ===\n");
+  console.log("=== Canton Bootstrap Script (Two-Phase) ===\n");
+
+  // --- Phase A: Canton provisioning (no auth required) ---
 
   // Step 1: Wait for Canton to be ready
+  console.log("--- Phase A: Canton Provisioning ---\n");
   console.log("1. Waiting for Canton participants...");
   for (const url of [PARTICIPANT1_URL, PARTICIPANT2_URL]) {
     for (let i = 0; i < 60; i++) {
@@ -140,40 +138,40 @@ async function main() {
   const bancoAzul = await allocateParty(PARTICIPANT2_URL, "BancoAzul", "BancoAzul");
   console.log(`  BancoAzul allocated on participant2: ${bancoAzul}\n`);
 
-  // Step 4: Create users on participant1
-  console.log("4. Creating users on participant1...");
-  await createUser(PARTICIPANT1_URL, "trader-rojo", bancoRojo, [canActAs(bancoRojo)]);
-  console.log("  trader-rojo created (canActAs BancoRojo)");
-  await createUser(PARTICIPANT1_URL, "supervisor-rojo", bancoRojo, [canReadAs(bancoRojo)]);
-  console.log("  supervisor-rojo created (canReadAs BancoRojo)");
-  await createUser(PARTICIPANT1_URL, "bot-rojo", bancoRojo, [canActAs(bancoRojo)]);
-  console.log("  bot-rojo created (canActAs BancoRojo)\n");
+  // --- Keycloak provisioning: create realm, client, scope, users ---
 
-  // Step 5: Create users on participant2
-  console.log("5. Creating users on participant2...");
-  await createUser(PARTICIPANT2_URL, "trader-azul", bancoAzul, [canActAs(bancoAzul)]);
-  console.log("  trader-azul created (canActAs BancoAzul)");
-  await createUser(PARTICIPANT2_URL, "supervisor-azul", bancoAzul, [canReadAs(bancoAzul)]);
-  console.log("  supervisor-azul created (canReadAs BancoAzul)");
-  await createUser(PARTICIPANT2_URL, "bot-azul", bancoAzul, [canActAs(bancoAzul)]);
-  console.log("  bot-azul created (canActAs BancoAzul)\n");
+  console.log("--- Keycloak Provisioning ---\n");
+  const userMap = await setupKeycloak();
+  console.log("");
 
-  // Step 6: Verify
-  console.log("6. Verifying...");
-  const p1Users = await getUsers(PARTICIPANT1_URL);
-  const p2Users = await getUsers(PARTICIPANT2_URL);
-  console.log(`  Participant1 users: ${p1Users.join(", ")}`);
-  console.log(`  Participant2 users: ${p2Users.join(", ")}`);
+  // --- Create Canton users with Keycloak UUIDs as IDs (DEC-010) ---
 
-  const expectedP1 = ["trader-rojo", "supervisor-rojo", "bot-rojo"];
-  const expectedP2 = ["trader-azul", "supervisor-azul", "bot-azul"];
-  const missingP1 = expectedP1.filter((u) => !p1Users.includes(u));
-  const missingP2 = expectedP2.filter((u) => !p2Users.includes(u));
+  console.log("--- Canton User Creation (UUID-based) ---\n");
 
-  if (missingP1.length > 0 || missingP2.length > 0) {
-    throw new Error(
-      `Missing users — P1: [${missingP1}], P2: [${missingP2}]`
-    );
+  // Participant1 users (BancoRojo): trader, supervisor, bot
+  console.log("4. Creating users on participant1 (UUIDs from Keycloak)...");
+  await createUser(PARTICIPANT1_URL, userMap["trader-rojo"], bancoRojo, [canActAs(bancoRojo)]);
+  console.log(`  trader-rojo (${userMap["trader-rojo"]}) created (canActAs BancoRojo)`);
+  await createUser(PARTICIPANT1_URL, userMap["supervisor-rojo"], bancoRojo, [canReadAs(bancoRojo)]);
+  console.log(`  supervisor-rojo (${userMap["supervisor-rojo"]}) created (canReadAs BancoRojo)`);
+  await createUser(PARTICIPANT1_URL, userMap["bot-rojo"], bancoRojo, [canActAs(bancoRojo)]);
+  console.log(`  bot-rojo (${userMap["bot-rojo"]}) created (canActAs BancoRojo)\n`);
+
+  // Participant2 users (BancoAzul): trader, supervisor, bot
+  console.log("5. Creating users on participant2 (UUIDs from Keycloak)...");
+  await createUser(PARTICIPANT2_URL, userMap["trader-azul"], bancoAzul, [canActAs(bancoAzul)]);
+  console.log(`  trader-azul (${userMap["trader-azul"]}) created (canActAs BancoAzul)`);
+  await createUser(PARTICIPANT2_URL, userMap["supervisor-azul"], bancoAzul, [canReadAs(bancoAzul)]);
+  console.log(`  supervisor-azul (${userMap["supervisor-azul"]}) created (canReadAs BancoAzul)`);
+  await createUser(PARTICIPANT2_URL, userMap["bot-azul"], bancoAzul, [canActAs(bancoAzul)]);
+  console.log(`  bot-azul (${userMap["bot-azul"]}) created (canActAs BancoAzul)\n`);
+
+  // --- Verification ---
+
+  console.log("--- Verification ---\n");
+  console.log("Username → UUID Mapping:");
+  for (const [username, uuid] of Object.entries(userMap)) {
+    console.log(`  ${username} → ${uuid}`);
   }
 
   console.log("\n=== Bootstrap completed successfully ===");
