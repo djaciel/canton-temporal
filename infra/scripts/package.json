@@ -9,5 +9,8 @@
   "dependencies": {
     "tsx": "^4.19.0",
     "typescript": "^5.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0"
   }
 }
