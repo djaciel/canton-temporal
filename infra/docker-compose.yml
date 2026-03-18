@@ -65,3 +65,41 @@ services:
       - "5002:5002"   # Admin API
     environment:
       JAVA_OPTS: "-Xmx4g -XX:+UseG1GC"
+
+  backend-rojo:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    environment:
+      PORT: "3000"
+      INSTITUTION_NAME: banco-rojo
+      PARTICIPANT_URL: http://canton:5013
+      DATABASE_URL: postgresql://canton:canton@postgres:5432/backend_rojo
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: canton
+      BOT_USERNAME: bot-rojo
+      BOT_PASSWORD: bot123
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+
+  backend-azul:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    environment:
+      PORT: "3000"
+      INSTITUTION_NAME: banco-azul
+      PARTICIPANT_URL: http://canton:5023
+      DATABASE_URL: postgresql://canton:canton@postgres:5432/backend_azul
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: canton
+      BOT_USERNAME: bot-azul
+      BOT_PASSWORD: bot123
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3002:3000"
