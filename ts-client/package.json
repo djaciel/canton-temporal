@@ -12,9 +12,23 @@
     "typecheck": "tsc --noEmit",
     "setup:env": "ts-node src/scripts/setup-env.ts",
     "demo:swap": "ts-node src/scripts/demo-swap.ts",
-    "demo:batch": "ts-node src/scripts/demo-batch.ts"
+    "demo:batch": "ts-node src/scripts/demo-batch.ts",
+    "temporal:worker": "ts-node src/temporal/workers/worker.ts",
+    "temporal:start-swap": "ts-node src/temporal/clients/starter.ts start-swap",
+    "temporal:accept-swap": "ts-node src/temporal/clients/starter.ts accept-swap",
+    "temporal:reject-swap": "ts-node src/temporal/clients/starter.ts reject-swap",
+    "temporal:status": "ts-node src/temporal/clients/starter.ts status-swap",
+    "temporal:start-batch": "ts-node src/temporal/clients/starter.ts start-batch",
+    "temporal:flush-batch": "ts-node src/temporal/clients/starter.ts flush-batch",
+    "temporal:batch-stats": "ts-node src/temporal/clients/starter.ts batch-stats",
+    "temporal:start-monitor": "ts-node src/temporal/clients/starter.ts start-monitor",
+    "temporal:active-proposals": "ts-node src/temporal/clients/starter.ts active-proposals"
   },
   "dependencies": {
+    "@temporalio/activity": "^1.15.0",
+    "@temporalio/client": "^1.15.0",
+    "@temporalio/worker": "^1.15.0",
+    "@temporalio/workflow": "^1.15.0",
     "dotenv": "^16.4.5",
     "jsonwebtoken": "^9.0.3"
   },
