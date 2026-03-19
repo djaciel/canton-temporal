@@ -1,10 +1,11 @@
 import { app } from './app.js';
 import { config } from './config.js';
+import { logger } from './utils/logger.js';
 import { EventConsumer } from './services/event-consumer.js';
 import { getUserParty } from './services/ledger-client.js';
 
 app.listen(config.port, () => {
-  console.log(`Backend ${config.institutionName} listening on port ${config.port}`);
+  logger.info('Backend started', { institution: config.institutionName, port: config.port });
 
   // Start event consumer — resolves bot party via Canton /v2/users/{id}
   const consumer = new EventConsumer(async (token: string) => {

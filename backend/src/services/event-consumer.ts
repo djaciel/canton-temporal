@@ -17,7 +17,9 @@
 // in one SQL transaction.
 // =============================================================================
 
+import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
+import { logger } from '../utils/logger.js';
 import { TokenProvider } from './token-provider.js';
 import { getUpdates } from './ledger-client.js';
 import { getLastOffset, processTransactionEvents } from '../db/queries.js';
@@ -38,7 +40,7 @@ export class EventConsumer {
   /** Start the polling loop. */
   start(): void {
     if (this.intervalId) return;
-    console.log(`[event-consumer] Starting polling every ${config.pollingIntervalMs}ms`);
+    logger.info('Starting event consumer polling', { intervalMs: config.pollingIntervalMs });
     // Fire immediately, then repeat on interval
     this.pollOnce();
     this.intervalId = setInterval(() => this.pollOnce(), config.pollingIntervalMs);
@@ -50,7 +52,7 @@ export class EventConsumer {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
-    console.log('[event-consumer] Stopped');
+    logger.info('Event consumer stopped');
   }
 
   /** Execute a single poll cycle. Safe to call externally (for testing). */
@@ -58,19 +60,22 @@ export class EventConsumer {
     if (this.polling) return; // prevent overlapping polls
     this.polling = true;
 
+    // Each polling cycle gets its own correlationId for traceability
+    const pollLogger = logger.withCorrelationId(randomUUID());
+
     try {
       const token = await this.tokenProvider.getToken();
 
       // Resolve party on first poll
       if (!this.party) {
         this.party = await this.resolveParty(token);
-        console.log(`[event-consumer] Resolved party: ${this.party}`);
+        pollLogger.info('Resolved bot party', { party: this.party });
       }
 
       // Read last offset from DB on first poll (AC: survives restart)
       if (this.lastOffset === null) {
         this.lastOffset = await getLastOffset();
-        console.log(`[event-consumer] Resuming from offset ${this.lastOffset}`);
+        pollLogger.info('Resuming from stored offset', { offset: this.lastOffset });
       }
 
       const updates = await getUpdates(token, this.party, this.lastOffset);
@@ -82,6 +87,7 @@ export class EventConsumer {
             update.offset,
             new Date().toISOString(),
           );
+          pollLogger.info('Processed transaction', { offset: update.offset, eventCount: update.events.length });
           this.lastOffset = update.offset;
         }
         // OffsetCheckpoint: we don't process contract logic, but track offset
@@ -91,7 +97,7 @@ export class EventConsumer {
         }
       }
     } catch (err) {
-      console.error('[event-consumer] Poll error:', (err as Error).message);
+      pollLogger.error('Poll error', { error: (err as Error).message });
       // Do not throw — the loop continues on next interval
     } finally {
       this.polling = false;

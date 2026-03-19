@@ -1,5 +1,6 @@
 import express from 'express';
 import { config } from './config.js';
+import { correlationMiddleware } from './middleware/correlation.js';
 import { authMiddleware } from './middleware/auth.js';
 import { assetsRouter } from './routes/assets.js';
 import { swapsRouter } from './routes/swaps.js';
@@ -8,6 +9,9 @@ import { eventsRouter } from './routes/events.js';
 const app = express();
 
 app.use(express.json());
+
+// Correlation ID — must be before auth so all requests get an ID
+app.use(correlationMiddleware);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', institution: config.institutionName });
