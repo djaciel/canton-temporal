@@ -20,6 +20,8 @@
 // Usage: cd backend/scripts && npx tsx run-scenario.ts
 // =============================================================================
 
+export {};
+
 // -- Backend endpoints --
 const BACKEND_ROJO = "http://localhost:3001";
 const BACKEND_AZUL = "http://localhost:3002";
