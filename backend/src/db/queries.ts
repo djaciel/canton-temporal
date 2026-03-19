@@ -204,6 +204,15 @@ export async function queryActiveContractsByTemplate(
   return result.rows;
 }
 
+export async function queryAllActiveContracts(): Promise<
+  Array<{ contract_id: string; template_id: string; payload: Record<string, unknown>; created_at: string; updated_at: string }>
+> {
+  const result = await pool.query(
+    'SELECT contract_id, template_id, payload, created_at, updated_at FROM active_contracts ORDER BY created_at DESC',
+  );
+  return result.rows;
+}
+
 export async function queryContractEvents(
   params: { limit: number; offset: number; templateId?: string },
 ): Promise<Array<Record<string, unknown>>> {
