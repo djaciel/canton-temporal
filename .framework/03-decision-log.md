@@ -156,6 +156,7 @@
 - **Razón:** El event consumer almacena el template ID tal cual viene de Canton (con hash). Las queries desde los endpoints REST usan el formato `#pkg:Mod:Entity`. Un exact match siempre falla.
 - **Consecuencias:** Queries usan LIKE en vez de `=`, lo cual es ligeramente menos eficiente pero correcto. Si hay colisiones de sufijo (improbable), se puede agregar un índice o normalizar al almacenar.
 - **Reversible:** Sí — se podría normalizar el template ID al almacenar eventos (strip hash, keep Module:Entity).
+- **Fase:** 3
 
 ### DEC-021: Assets requieren observers cross-institution para Settle atómico
 
@@ -164,3 +165,4 @@
 - **Razón:** Sin observers, participant1 no puede ver el asset creado en participant2, y Canton retorna `CONTRACT_NOT_FOUND` al intentar Settle. Confirmado en integration test.
 - **Consecuencias:** El frontend/caller debe conocer la party de la contraparte antes de crear el asset. Los scripts `run-scenario.ts` y `smoke-test.ts` primero resuelven parties y luego crean assets con observers.
 - **Reversible:** No — es un requisito del modelo UTXO de Daml con multi-participant.
+- **Fase:** 3
