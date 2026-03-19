@@ -1,0 +1,12 @@
+{
+  "name": "backend-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scenario": "tsx run-scenario.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.19.0"
+  }
+}
