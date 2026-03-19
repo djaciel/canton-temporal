@@ -17,7 +17,6 @@ vi.mock('../db/pool.js', () => ({
 
 const {
   getLastOffset,
-  updateOffset,
   insertContractEvent,
   upsertActiveContract,
   deleteActiveContract,
@@ -51,17 +50,6 @@ describe('getLastOffset', () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
     const offset = await getLastOffset();
     expect(offset).toBe(0);
-  });
-});
-
-describe('updateOffset', () => {
-  it('upserts the offset in consumer_state', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-    await updateOffset(100);
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('consumer_state'),
-      [100, 'main'],
-    );
   });
 });
 
@@ -212,18 +200,18 @@ describe('processTransactionEvents', () => {
 
 // ---- Query functions for REST endpoints (T-07 will use these) ----
 describe('queryActiveContractsByTemplate', () => {
-  it('queries active_contracts filtered by template_id', async () => {
+  it('queries active_contracts filtered by template_id suffix (LIKE)', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [
-        { contract_id: 'c1', template_id: 't1', payload: { x: 1 }, created_at: '2026-01-01', updated_at: '2026-01-02' },
+        { contract_id: 'c1', template_id: 'hash:Asset:Asset', payload: { x: 1 }, created_at: '2026-01-01', updated_at: '2026-01-02' },
       ],
     });
-    const result = await queryActiveContractsByTemplate('t1');
+    const result = await queryActiveContractsByTemplate('#asset-swap-contracts:Asset:Asset');
     expect(result).toHaveLength(1);
     expect(result[0].contract_id).toBe('c1');
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('template_id'),
-      ['t1'],
+      expect.stringContaining('LIKE'),
+      ['%:Asset:Asset'],
     );
   });
 });
@@ -243,7 +231,7 @@ describe('queryContractEvents', () => {
     await queryContractEvents({ limit: 10, offset: 0, templateId: 'pkg:Mod:T' });
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('template_id'),
-      expect.arrayContaining(['pkg:Mod:T']),
+      expect.arrayContaining(['%:Mod:T']),
     );
   });
 });

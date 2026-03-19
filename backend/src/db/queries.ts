@@ -57,15 +57,6 @@ export async function getLastOffset(): Promise<number> {
   return Number(result.rows[0].last_offset);
 }
 
-export async function updateOffset(offset: number): Promise<void> {
-  await pool.query(
-    `INSERT INTO consumer_state (id, last_offset, updated_at)
-     VALUES ('main', $1, NOW())
-     ON CONFLICT (id) DO UPDATE SET last_offset = $1, updated_at = NOW()`,
-    [offset, 'main'],
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Single-row operations (used standalone or within a transaction client)
 // ---------------------------------------------------------------------------
@@ -178,7 +169,7 @@ export async function processTransactionEvents(
       `INSERT INTO consumer_state (id, last_offset, updated_at)
        VALUES ('main', $1, NOW())
        ON CONFLICT (id) DO UPDATE SET last_offset = $1, updated_at = NOW()`,
-      [offset, 'main'],
+      [offset],
     );
 
     await client.query('COMMIT');
@@ -194,12 +185,31 @@ export async function processTransactionEvents(
 // Query functions (for REST endpoints — used by T-05, T-06, T-07)
 // ---------------------------------------------------------------------------
 
+/**
+ * Extracts the Module:Entity suffix from a template ID.
+ * Input:  '#asset-swap-contracts:Asset:Asset' or 'hash:Asset:Asset'
+ * Output: ':Asset:Asset'
+ */
+function templateSuffix(templateId: string): string {
+  const parts = templateId.split(':');
+  if (parts.length >= 3) {
+    return ':' + parts.slice(-2).join(':');
+  }
+  return templateId;
+}
+
+/**
+ * Queries active contracts by template suffix (Module:Entity).
+ * Canton resolves #package-name:Module:Entity to hash:Module:Entity in events,
+ * so we match on the Module:Entity suffix to handle both forms.
+ */
 export async function queryActiveContractsByTemplate(
   templateId: string,
 ): Promise<Array<{ contract_id: string; template_id: string; payload: Record<string, unknown>; created_at: string; updated_at: string }>> {
+  const suffix = templateSuffix(templateId);
   const result = await pool.query(
-    'SELECT contract_id, template_id, payload, created_at, updated_at FROM active_contracts WHERE template_id = $1 ORDER BY created_at DESC',
-    [templateId],
+    'SELECT contract_id, template_id, payload, created_at, updated_at FROM active_contracts WHERE template_id LIKE $1 ORDER BY created_at DESC',
+    [`%${suffix}`],
   );
   return result.rows;
 }
@@ -217,9 +227,10 @@ export async function queryContractEvents(
   params: { limit: number; offset: number; templateId?: string },
 ): Promise<Array<Record<string, unknown>>> {
   if (params.templateId) {
+    const suffix = templateSuffix(params.templateId);
     const result = await pool.query(
-      `SELECT * FROM contract_events WHERE template_id = $1 ORDER BY offset_value DESC LIMIT $2 OFFSET $3`,
-      [params.templateId, params.limit, params.offset],
+      `SELECT * FROM contract_events WHERE template_id LIKE $1 ORDER BY offset_value DESC LIMIT $2 OFFSET $3`,
+      [`%${suffix}`, params.limit, params.offset],
     );
     return result.rows;
   }

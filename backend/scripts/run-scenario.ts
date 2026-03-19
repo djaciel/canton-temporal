@@ -141,12 +141,65 @@ async function main() {
   }
   console.log();
 
-  // ---------- Step 2: Create Asset TokenX via backend-rojo ----------
-  console.log("2. Creating Asset TokenX via backend-rojo...");
+  // ---------- Step 2: Resolve party IDs ----------
+  // Create small seed assets to discover party IDs via projection,
+  // then create the actual swap assets with cross-institution observers.
+  console.log("2. Creating seed assets to resolve party IDs...");
+  const seedX = await apiCall(BACKEND_ROJO, "POST", "/api/assets", tokenRojo, {
+    symbol: "Seed",
+    quantity: "1",
+    observers: [],
+  });
+  if (seedX.status !== 201) {
+    console.error(`  FAILED: seed asset rojo: ${seedX.status}`, seedX.data);
+    process.exit(1);
+  }
+  const seedY = await apiCall(BACKEND_AZUL, "POST", "/api/assets", tokenAzul, {
+    symbol: "Seed",
+    quantity: "1",
+    observers: [],
+  });
+  if (seedY.status !== 201) {
+    console.error(`  FAILED: seed asset azul: ${seedY.status}`, seedY.data);
+    process.exit(1);
+  }
+  console.log("  Seed assets created, waiting 4s for projection...");
+  await sleep(4000);
+
+  const rojoAssets = await apiCall(BACKEND_ROJO, "GET", "/api/assets", tokenRojo);
+  const rojoAsset = (rojoAssets.data as unknown as Array<{ payload: { owner: string } }>)
+    .find((a) => a.payload?.owner);
+  if (!rojoAsset) {
+    console.error("  FAILED: Could not resolve BancoRojo party from projection");
+    return process.exit(1);
+  }
+  const bancoRojoParty = rojoAsset.payload.owner;
+
+  const azulAssets = await apiCall(BACKEND_AZUL, "GET", "/api/assets", tokenAzul);
+  const azulAsset = (azulAssets.data as unknown as Array<{ payload: { owner: string } }>)
+    .find((a) => a.payload?.owner);
+  if (!azulAsset) {
+    console.error("  FAILED: Could not resolve BancoAzul party from projection");
+    return process.exit(1);
+  }
+  const bancoAzulParty = azulAsset.payload.owner;
+
+  // Bot party = BancoRojo party (bot-rojo has canActAs for BancoRojo)
+  const botParty = bancoRojoParty;
+
+  console.log(`  BancoRojo party: ${bancoRojoParty.substring(0, 30)}...`);
+  console.log(`  BancoAzul party: ${bancoAzulParty.substring(0, 30)}...`);
+  console.log(`  Settler (bot-rojo) party: ${botParty.substring(0, 30)}...`);
+  console.log();
+
+  // ---------- Step 3: Create swap assets with cross-institution observers ----------
+  // Assets need the counterparty as observer so they are visible on both
+  // participants via the sync domain (required for atomic Settle).
+  console.log("3. Creating Asset TokenX via backend-rojo (observer: BancoAzul)...");
   const createX = await apiCall(BACKEND_ROJO, "POST", "/api/assets", tokenRojo, {
     symbol: "TokenX",
     quantity: "100",
-    observers: [],
+    observers: [bancoAzulParty],
   });
   if (createX.status !== 201) {
     console.error(`  FAILED: Expected 201, got ${createX.status}`, createX.data);
@@ -154,14 +207,12 @@ async function main() {
   }
   const tokenXCid = createX.data.contractId as string;
   console.log(`  TokenX created: ${tokenXCid.substring(0, 40)}...`);
-  console.log();
 
-  // ---------- Step 3: Create Asset TokenY via backend-azul ----------
-  console.log("3. Creating Asset TokenY via backend-azul...");
+  console.log("4. Creating Asset TokenY via backend-azul (observer: BancoRojo)...");
   const createY = await apiCall(BACKEND_AZUL, "POST", "/api/assets", tokenAzul, {
     symbol: "TokenY",
     quantity: "50",
-    observers: [],
+    observers: [bancoRojoParty],
   });
   if (createY.status !== 201) {
     console.error(`  FAILED: Expected 201, got ${createY.status}`, createY.data);
@@ -171,40 +222,7 @@ async function main() {
   console.log(`  TokenY created: ${tokenYCid.substring(0, 40)}...`);
   console.log();
 
-  // ---------- Step 4: Propose swap via backend-rojo ----------
-  // We need the party IDs for counterparty and settler. These are resolved
-  // by the backend from the token, but for the proposal we need the
-  // counterparty's party ID. We get it from the assets query on backend-azul.
-  console.log("4. Resolving party IDs from assets...");
-  await sleep(4000); // Wait for projection to catch up
-
-  const azulAssets = await apiCall(BACKEND_AZUL, "GET", "/api/assets", tokenAzul);
-  const azulAsset = (azulAssets.data as unknown as Array<{ payload: { owner: string } }>)
-    .find((a) => a.payload?.owner);
-  if (!azulAsset) {
-    console.error("  FAILED: Could not find BancoAzul asset to resolve party ID");
-    return process.exit(1);
-  }
-  const bancoAzulParty = azulAsset.payload.owner;
-
-  const rojoAssets = await apiCall(BACKEND_ROJO, "GET", "/api/assets", tokenRojo);
-  const rojoAsset = (rojoAssets.data as unknown as Array<{ payload: { owner: string } }>)
-    .find((a) => a.payload?.owner);
-  if (!rojoAsset) {
-    console.error("  FAILED: Could not find BancoRojo asset to resolve party ID");
-    return process.exit(1);
-  }
-  const bancoRojoParty = rojoAsset.payload.owner;
-
-  // Bot party — resolve from bot-rojo's assets query (bot has canActAs which includes read)
-  // The bot's party is the same as BancoRojo's party (bot-rojo acts as BancoRojo)
-  const botParty = bancoRojoParty;
-
-  console.log(`  BancoRojo party: ${bancoRojoParty.substring(0, 30)}...`);
-  console.log(`  BancoAzul party: ${bancoAzulParty.substring(0, 30)}...`);
-  console.log(`  Settler (bot-rojo) party: ${botParty.substring(0, 30)}...`);
-  console.log();
-
+  // ---------- Step 5: Propose swap via backend-rojo ----------
   console.log("5. Proposing swap: TokenX for TokenY via backend-rojo...");
   const propose = await apiCall(BACKEND_ROJO, "POST", "/api/swaps/propose", tokenRojo, {
     offeredAssetCid: tokenXCid,
