@@ -1,6 +1,7 @@
 import express from 'express';
 import { config } from './config.js';
 import { authMiddleware } from './middleware/auth.js';
+import { assetsRouter } from './routes/assets.js';
 
 const app = express();
 
@@ -12,5 +13,8 @@ app.get('/health', (_req, res) => {
 
 // All /api/* routes require OIDC auth
 app.use('/api', authMiddleware);
+
+// Route registrations
+app.use('/api/assets', assetsRouter);
 
 export { app };
